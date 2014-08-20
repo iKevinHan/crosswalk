@@ -41,6 +41,7 @@ static int g_argc;
 static char** g_argv;
 static gboolean query_running = FALSE;
 static gboolean fullscreen = FALSE;
+static gint debugging_port = -1;
 static gchar** cmd_appid_or_url;
 
 static GOptionEntry entries[] = {
@@ -48,6 +49,8 @@ static GOptionEntry entries[] = {
     "Check whether the application is running", NULL },
   { "fullscreen", 'f', 0, G_OPTION_ARG_NONE, &fullscreen,
     "Run the application as fullscreen", NULL },
+  { "debugging_port", 'd', 0, G_OPTION_ARG_INT, &debugging_port,
+    "Enable remote debugging, port number 0 means to disable", NULL },
   { G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_STRING_ARRAY, &cmd_appid_or_url,
     "ID of the application to be launched or URL to open", NULL },
   { NULL }
@@ -255,6 +258,39 @@ void connect_to_application_manager() {
   }
 }
 
+static void enable_remote_debugging(gint debugging_port) {
+  GError* error = NULL;
+  GDBusProxy* running_proxy = g_dbus_proxy_new_sync(
+      g_connection,
+      G_DBUS_PROXY_FLAGS_NONE, NULL, xwalk_service_name,
+      xwalk_running_path, xwalk_running_manager_iface, NULL, &error);
+  if (!running_proxy) {
+    g_print("Couldn't create proxy for '%s': %s\n", xwalk_running_manager_iface,
+            error->message);
+    g_error_free(error);
+    exit(1);
+  }
+
+  GVariant* result  = g_dbus_proxy_call_sync(
+      running_proxy,
+      "EnableRemoteDebugging",
+      g_variant_new("(u)", debugging_port),
+      G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+  if (!result) {
+    fprintf(stderr, "Couldn't call 'EnableRemoteDebugging' method: %s\n",
+        error->message);
+    exit(1);
+  }
+
+  int port = -1;
+  g_variant_get(result, "(u)", &port);
+  if (port > 0) {
+    fprintf(stderr, "Remote debugging enabled at port '%d'\n", port);
+  } else {
+    fprintf(stderr, "Remote debugging has been disabled\n");
+  }
+}
+
 int main(int argc, char** argv) {
   GError* error = NULL;
   char* appid_or_url;
@@ -285,7 +321,12 @@ int main(int argc, char** argv) {
   // Launch app.
   if (!strcmp(basename(argv[0]), "xwalk-launcher")) {
     if (cmd_appid_or_url == NULL) {
-      fprintf(stderr, "No AppID informed, nothing to do.\n");
+      if (debugging_port < 0) {
+        fprintf(stderr, "No AppID informed, nothing to do.\n");
+      } else {
+        // Deal with the case "xwalk-launcher -d PORT_NUMBER"
+        enable_remote_debugging(debugging_port);
+      }
       return 0;
     }
     appid_or_url = strdup(cmd_appid_or_url[0]);
@@ -298,6 +339,10 @@ int main(int argc, char** argv) {
     appid_or_url = strdup(basename(argv[0]));
   }
 
+  // Deal with the case "xwalk-launcher -d PORT_NUMBER APP_ID"
+  if (debugging_port >= 0) {
+    enable_remote_debugging(debugging_port);
+  }
 
   // Query app.
   if (query_running) {
